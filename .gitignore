@@ -1,0 +1,3 @@
+*.parquet
+*.tar.gz
+tar2parquet
