@@ -40,17 +40,28 @@ DuckDB COPY (SELECT * FROM tar_csv()) TO A.parquet (zstd)
 - quoted field 안의 개행은 지원하지 않음(행 경계 블록 분할 전제).
   콤마·`""` escape는 지원.
 
-## 성능 (로컬, Apple Silicon)
+## 성능
 
-합성 데이터 44M행 / CSV 2.43GB / tar.gz 998MB:
+합성 데이터 44M행 / CSV 2.43GB / tar.gz ~1GB 기준.
+
+로컬 (Apple Silicon, NVMe):
 
 | 항목 | 시간 | 처리량 |
 |---|---|---|
 | gzip 해제 단독 (이론 상한) | 9.47s | 257 MB/s |
 | 전체 변환 | 9.79s | 248 MB/s |
 
-병목은 단일 스트림 gzip 해제이며 파이프라인 오버헤드는 ~3%.
-NFS 환경에서는 prefetch reader가 디스크 read를 해제와 겹쳐 지연을 흡수한다.
+k8s NFS (Xeon E5-2696v3 4코어, nfs-client 기본 SC, NFS 쓰기 baseline 115MB/s):
+
+| 항목 | 시간 | 비고 |
+|---|---|---|
+| 변환 1회차 | 22.6s | CPU 305% (4코어 중), CSV 기준 107 MB/s |
+| 변환 2회차 | 21.3s | 반복 측정 일관 |
+
+두 환경 모두 병목은 단일 스트림 gzip 해제이며 파이프라인 오버헤드는 수 %.
+NFS read(~46MB/s 소요 대역)는 prefetch reader가 해제와 겹쳐 wall time에
+추가되지 않음을 확인했다. user/real ≈ 3.05로 Table UDF 병렬 공급이
+Linux/amd64에서도 동작함을 검증.
 
 ## 벤치마크 도구
 
