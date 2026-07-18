@@ -54,11 +54,13 @@ func TestConvert(t *testing.T) {
 	src := filepath.Join(dir, "A.tar.gz")
 	dst := filepath.Join(dir, "A.parquet")
 
+	// Col/Row/ChipX/Zone: 알려진 컬럼. Foo(float)/Bar(int): 타입 추론 대상.
+	// Zone "01"은 추론이면 BIGINT가 되므로 VARCHAR 강제를 검증한다.
 	writeTarGZ(t, src, []tarFile{
 		{"README.txt", "not a csv\n"},
-		{"A-1.csv", "Col,Row,ChipX,Zone,Foo\n1,2,1.5,01,0.1\n3,4,2.5,02,0.2\n"},
-		{"A-2.csv", "Col,Row,ChipX,Zone,Foo\n5,6,3.5,01,0.3"}, // 개행 없이 끝남
-		{"A-3.csv", "Col,Row,ChipX,Zone,Foo\n7,8,4.5,02,0.4\n"},
+		{"A-1.csv", "Col,Row,ChipX,Zone,Foo,Bar\n1,2,1.5,01,0.1,10\n3,4,2.5,\"z,2\",0.2,20\n"},
+		{"A-2.csv", "Col,Row,ChipX,Zone,Foo,Bar\n5,6,3.5,01,0.3,30"}, // 개행 없이 끝남
+		{"A-3.csv", "Col,Row,ChipX,Zone,Foo,Bar\n7,8,4.5,02,,40\n"},  // Foo 빈 값 → NULL
 	})
 
 	if err := convert(src, dst); err != nil {
@@ -74,17 +76,28 @@ func TestConvert(t *testing.T) {
 	from := "read_parquet('" + strings.ReplaceAll(dst, "'", "''") + "')"
 
 	var (
-		count   int
-		sumCol  int64
-		minZone string
+		count    int
+		sumCol   int64
+		sumBar   int64
+		countFoo int
+		minZone  string
 	)
 	if err := db.QueryRow(
-		"SELECT count(*), CAST(sum(Col) AS BIGINT), min(Zone) FROM " + from,
-	).Scan(&count, &sumCol, &minZone); err != nil {
+		"SELECT count(*), CAST(sum(Col) AS BIGINT), CAST(sum(Bar) AS BIGINT), count(Foo), min(Zone) FROM "+from,
+	).Scan(&count, &sumCol, &sumBar, &countFoo, &minZone); err != nil {
 		t.Fatal(err)
 	}
-	if count != 4 || sumCol != 16 || minZone != "01" {
-		t.Errorf("got count=%d sum(Col)=%d min(Zone)=%q, want 4, 16, \"01\"", count, sumCol, minZone)
+	if count != 4 || sumCol != 16 || sumBar != 100 || countFoo != 3 || minZone != "01" {
+		t.Errorf("got count=%d sum(Col)=%d sum(Bar)=%d count(Foo)=%d min(Zone)=%q, want 4, 16, 100, 3, \"01\"",
+			count, sumCol, sumBar, countFoo, minZone)
+	}
+
+	var quotedZone string
+	if err := db.QueryRow("SELECT Zone FROM " + from + " WHERE Col = 3").Scan(&quotedZone); err != nil {
+		t.Fatal(err)
+	}
+	if quotedZone != "z,2" {
+		t.Errorf("quoted Zone = %q, want \"z,2\"", quotedZone)
 	}
 
 	rows, err := db.Query("SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM " + from + ")")
@@ -105,14 +118,13 @@ func TestConvert(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Zone은 "01" 같은 숫자형 문자열이라 자동 추론이면 BIGINT가 되지만,
-	// 알려진 컬럼 타입 강제(types)로 VARCHAR가 유지되어야 한다.
 	want := map[string]string{
 		"Col":   "BIGINT",
 		"Row":   "BIGINT",
 		"ChipX": "DOUBLE",
 		"Zone":  "VARCHAR",
 		"Foo":   "DOUBLE",
+		"Bar":   "BIGINT",
 	}
 	for name, typ := range want {
 		if got[name] != typ {
@@ -152,5 +164,25 @@ func TestConvertCorruptInput(t *testing.T) {
 
 	if err := convert(src, dst); err == nil {
 		t.Fatal("expected error for corrupt input")
+	}
+}
+
+func TestConvertMalformedRow(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "A.tar.gz")
+	dst := filepath.Join(dir, "A.parquet")
+
+	// 필드 수가 맞지 않는 행은 §11에 따라 실패해야 한다.
+	writeTarGZ(t, src, []tarFile{
+		{"A-1.csv", "Col,Row\n1,2\n3,4,5\n"},
+	})
+
+	if err := convert(src, dst); err == nil {
+		t.Fatal("expected error for malformed row")
+	}
+	for _, p := range []string{dst, dst + ".tmp"} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s should not exist", p)
+		}
 	}
 }
