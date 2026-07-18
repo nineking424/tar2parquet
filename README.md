@@ -8,6 +8,8 @@ go build .
 ./tar2parquet A.tar.gz   # → A.parquet
 ```
 
+환경변수 `TAR2PARQUET_THREADS`로 병렬도 상한을 제한할 수 있다(기본: 코어 수).
+
 ## 아키텍처
 
 ```
@@ -42,7 +44,11 @@ DuckDB COPY (SELECT * FROM tar_csv()) TO A.parquet (zstd)
 
 ## 성능
 
-합성 데이터 44M행 / CSV 2.43GB / tar.gz ~1GB 기준.
+표준 샘플(50MiB CSV × 119개, 113M행/6.24GB) 기준 상세 리포트는
+**[PERFORMANCE.md](PERFORMANCE.md)** 참조. 요약: Apple M4에서 24.1s(259MB/s),
+Xeon 4코어+NFS에서 53.7s(116MB/s, cold도 +7.6%뿐 — NFS read는 prefetch로 흡수).
+
+아래는 초기 검증(44M행 / CSV 2.43GB / tar.gz ~1GB) 수치.
 
 로컬 (Apple Silicon, NVMe):
 
