@@ -1,0 +1,78 @@
+# NFS(기본 storage class) 환경 성능 검증용 Job.
+#
+#   kubectl apply -f k8s/bench-job.yaml
+#   kubectl logs -f job/tar2parquet-bench
+#
+# 수행 내용: 레포 clone → 빌드 → NFS 쓰기 baseline(dd) → 합성 A.tar.gz 생성(NFS)
+# → 변환 2회(1회차: 생성 직후 캐시 워밍 상태, 2회차: 반복 측정) → 결과 검증.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tar2parquet-bench-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tar2parquet-bench
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bench
+          image: golang:1.24
+          workingDir: /work
+          command: ["/bin/bash", "-ec"]
+          args:
+            - |
+              echo "== node info =="
+              nproc; grep -m1 'model name' /proc/cpuinfo || true
+              df -hT /data | tail -1
+
+              echo "== clone & build =="
+              git clone --depth 1 https://github.com/nineking424/tar2parquet.git src
+              cd src
+              time go build -o /work/tar2parquet .
+              go build -o /work/gen ./bench/gen
+              go build -o /work/check ./bench/check
+              cd /work
+
+              echo "== NFS write baseline (1GiB, fsync) =="
+              dd if=/dev/zero of=/data/dd.test bs=4M count=256 conv=fsync 2>&1 | tail -1
+              rm /data/dd.test
+
+              echo "== generate synthetic archive on NFS =="
+              time ./gen /data/A.tar.gz
+              ls -l /data/A.tar.gz
+
+              echo "== convert run 1 =="
+              time ./tar2parquet /data/A.tar.gz
+              ls -l /data/A.parquet
+              ./check /data/A.parquet
+
+              echo "== convert run 2 =="
+              rm /data/A.parquet
+              time ./tar2parquet /data/A.tar.gz
+              ./check /data/A.parquet | head -1
+
+              echo "== done =="
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "4"
+              memory: 4Gi
+            limits:
+              memory: 8Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: tar2parquet-bench-data
