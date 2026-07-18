@@ -1,0 +1,60 @@
+# 상세 성능 테스트 3/3: 변환 벤치 (talos-wk-01, 빈 page cache에서 cold run 시작)
+# cold 1회 + warm 2회 + 스레드 스케일링(1/2/4) + 정합성 검증. GNU time으로 RSS 수집.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tar2parquet-perf-bench
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      nodeName: talos-wk-01
+      containers:
+        - name: bench
+          image: golang:1.24
+          command: ["/bin/bash", "-ec"]
+          args:
+            - |
+              apt-get update -qq >/dev/null && apt-get install -y -qq time >/dev/null
+              GT=/usr/bin/time
+              PICK='Elapsed|User time|System time|Percent of CPU|Maximum resident'
+
+              echo "== convert run 1 (cold NFS read) =="
+              $GT -v /data/bin/tar2parquet /data/A.tar.gz 2>&1 | grep -E "$PICK|created"
+              ls -l /data/A.parquet
+
+              echo "== verify =="
+              /data/bin/check /data/A.parquet
+
+              echo "== convert runs 2-3 (warm) =="
+              for i in 2 3; do
+                rm /data/A.parquet
+                echo "-- run $i"
+                $GT -v /data/bin/tar2parquet /data/A.tar.gz 2>&1 | grep -E "$PICK"
+              done
+
+              echo "== thread scaling (warm) =="
+              for t in 1 2 4; do
+                rm -f /data/A.parquet
+                echo "-- threads=$t"
+                TAR2PARQUET_THREADS=$t $GT -v /data/bin/tar2parquet /data/A.tar.gz 2>&1 | grep -E "$PICK"
+              done
+
+              echo "== verify final =="
+              /data/bin/check /data/A.parquet | head -1
+              echo "== bench done =="
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "2"
+              memory: 3Gi
+            limits:
+              memory: 6Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: tar2parquet-perf-data

@@ -113,6 +113,15 @@ func convert(src, dst string) error {
 		return fmt.Errorf("configure duckdb: %w", err)
 	}
 
+	// TAR2PARQUET_THREADS: 병렬도 상한 (기본: 코어 수). 벤치마크/코어 제한용.
+	threads := runtime.NumCPU()
+	if v, err := strconv.Atoi(os.Getenv("TAR2PARQUET_THREADS")); err == nil && v > 0 {
+		threads = v
+	}
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("SET threads = %d", threads)); err != nil {
+		return fmt.Errorf("configure duckdb: %w", err)
+	}
+
 	fd := &feed{
 		blocks: make(chan []byte, feedDepth),
 		done:   make(chan struct{}),
@@ -134,7 +143,7 @@ func convert(src, dst string) error {
 		return fmt.Errorf("stream: %w", schema.err)
 	}
 
-	source := &csvSource{fd: fd, columns: schema.columns}
+	source := &csvSource{fd: fd, columns: schema.columns, maxThreads: threads}
 	udf := duckdb.ParallelChunkTableFunction{
 		Config: duckdb.TableFunctionConfig{},
 		BindArguments: func(map[string]any, ...any) (duckdb.ParallelChunkTableSource, error) {
@@ -177,8 +186,9 @@ func convert(src, dst string) error {
 // ---- DuckDB table UDF source ----
 
 type csvSource struct {
-	fd      *feed
-	columns []column
+	fd         *feed
+	columns    []column
+	maxThreads int
 }
 
 func (s *csvSource) ColumnInfos() []duckdb.ColumnInfo {
@@ -195,8 +205,8 @@ func (s *csvSource) ColumnInfos() []duckdb.ColumnInfo {
 
 func (s *csvSource) Init() duckdb.ParallelTableSourceInfo {
 	// 주의: 0을 넘기면 드라이버가 DuckDB에 max_threads=0을 그대로 전달해
-	// 단일 스레드 스캔이 된다. 명시적으로 코어 수를 지정한다.
-	return duckdb.ParallelTableSourceInfo{MaxThreads: runtime.NumCPU()}
+	// 단일 스레드 스캔이 된다. 반드시 양수를 지정한다.
+	return duckdb.ParallelTableSourceInfo{MaxThreads: s.maxThreads}
 }
 
 func (s *csvSource) NewLocalState() any {

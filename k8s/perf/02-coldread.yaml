@@ -1,0 +1,40 @@
+# 상세 성능 테스트 2/3: cold/warm NFS read baseline + gzip 해제 단독 (talos-wk-02)
+# 새 노드의 빈 page cache에서 시작하므로 첫 dd가 cold NFS read다.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tar2parquet-perf-coldread
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      nodeName: talos-wk-02
+      containers:
+        - name: coldread
+          image: golang:1.24
+          command: ["/bin/bash", "-ec"]
+          args:
+            - |
+              echo "== cold NFS sequential read =="
+              dd if=/data/A.tar.gz of=/dev/null bs=4M 2>&1 | tail -1
+              echo "== warm NFS sequential read (page cache) =="
+              dd if=/data/A.tar.gz of=/dev/null bs=4M 2>&1 | tail -1
+              echo "== gzip decompress only, warm cache (CPU 이론 상한) =="
+              /data/bin/gunzip /data/A.tar.gz
+              /data/bin/gunzip /data/A.tar.gz
+              echo "== coldread done =="
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              memory: 3Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: tar2parquet-perf-data

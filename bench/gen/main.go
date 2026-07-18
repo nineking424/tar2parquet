@@ -1,10 +1,12 @@
 package main
 
-// 합성 A.tar.gz 생성기: REQUIREMENTS 스키마로 fileCount개의 CSV를 담는다.
+// 합성 A.tar.gz 생성기: REQUIREMENTS 스키마의 CSV 파일 -files개를
+// 각각 약 -mb MiB 크기로 담는다.
 
 import (
 	"archive/tar"
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -14,17 +16,17 @@ import (
 	"github.com/klauspost/compress/gzip"
 )
 
-const (
-	fileCount   = 8
-	rowsPerFile = 5_500_000 // 전체 CSV 약 2.2GB
-)
+const csvHeader = "Col,Row,ChipX,ChipY,WaferX,WaferY,Height,Zone\n"
 
 func main() {
-	if len(os.Args) != 2 {
-		log.Fatal("usage: gen A.tar.gz")
+	files := flag.Int("files", 119, "number of csv files")
+	mb := flag.Int("mb", 50, "approx size of each csv in MiB")
+	flag.Parse()
+	if flag.NArg() != 1 {
+		log.Fatal("usage: gen [-files N] [-mb M] A.tar.gz")
 	}
 
-	f, err := os.Create(os.Args[1])
+	f, err := os.Create(flag.Arg(0))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -33,14 +35,17 @@ func main() {
 	gz, _ := gzip.NewWriterLevel(f, gzip.BestSpeed)
 	tw := tar.NewWriter(gz)
 
+	target := *mb << 20
 	var buf bytes.Buffer
-	totalRows := int64(0)
-	totalBytes := int64(0)
+	var totalRows, totalBytes int64
+	g := 0 // 전역 row 인덱스: 파일 간 내용이 달라지도록
 
-	for i := 1; i <= fileCount; i++ {
+	for i := 1; i <= *files; i++ {
 		buf.Reset()
-		buf.WriteString("Col,Row,ChipX,ChipY,WaferX,WaferY,Height,Zone\n")
-		for r := 0; r < rowsPerFile; r++ {
+		buf.WriteString(csvHeader)
+		for buf.Len() < target {
+			r := g
+			g++
 			buf.WriteString(strconv.Itoa(r % 500))
 			buf.WriteByte(',')
 			buf.WriteString(strconv.Itoa(r % 700))
@@ -82,5 +87,5 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("rows=%d csv_bytes=%d\n", totalRows, totalBytes)
+	fmt.Printf("files=%d rows=%d csv_bytes=%d\n", *files, totalRows, totalBytes)
 }
