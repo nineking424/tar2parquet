@@ -102,11 +102,82 @@ type schemaResult struct {
 	err     error
 }
 
-// feed는 tar 스트리머가 만든 행 블록을 DuckDB 스레드들에 전달한다.
+// feed는 producer(스트리밍 goroutine)가 만든 행 블록을 DuckDB 스레드들에
+// 전달한다. 채널과 오류 필드는 이 타입의 메서드로만 다룬다. 불변식:
+//
+//  1. emit·finish는 producer goroutine 하나만 호출한다.
+//  2. finish는 오류를 기록한 뒤 채널을 닫는다 — next가 닫힘을 관측하면
+//     (channel close의 happens-before) 오류 읽기는 추가 동기화 없이 안전하다.
+//  3. abort는 소비 측이 쿼리 조기 종료 시 호출한다(멱등). 이후의 emit은
+//     errAborted를 돌려 채널 send에 블록된 producer를 깨운다.
 type feed struct {
-	blocks chan []byte
-	done   chan struct{} // 닫히면 producer 중단 (쿼리 조기 실패 시)
-	err    error         // producer 오류; close(blocks) 이전에만 쓴다
+	blocks    chan []byte
+	done      chan struct{}
+	abortOnce sync.Once
+	err       error
+}
+
+func newFeed() *feed {
+	return &feed{
+		blocks: make(chan []byte, feedDepth),
+		done:   make(chan struct{}),
+	}
+}
+
+// emit은 행 블록을 소비 측에 전달한다. abort 이후에는 errAborted.
+func (f *feed) emit(block []byte) error {
+	select {
+	case f.blocks <- block:
+		return nil
+	case <-f.done:
+		return errAborted
+	}
+}
+
+// finish는 producer의 종료를 알린다. err는 next와 error로 전파된다.
+func (f *feed) finish(err error) {
+	f.err = err
+	close(f.blocks)
+}
+
+// next는 다음 행 블록을 돌려준다. (nil, nil)은 정상 종료,
+// (nil, err)는 producer 오류다.
+func (f *feed) next() ([]byte, error) {
+	block, ok := <-f.blocks
+	if !ok {
+		return nil, f.err
+	}
+	return block, nil
+}
+
+// abort는 producer 중단을 요청한다 (쿼리 조기 실패 시). 멱등.
+func (f *feed) abort() {
+	f.abortOnce.Do(func() { close(f.done) })
+}
+
+// error는 producer의 최종 오류를 돌려준다. finish 이후에만 호출한다
+// (convert에서는 wg.Wait 뒤).
+func (f *feed) error() error {
+	return f.err
+}
+
+// schemaPromise는 스키마 확정을 정확히 한 번 전달한다. resolve는 멱등 —
+// 첫 호출만 채택되고, 인자 함수는 채택될 때만 평가된다(추론 비용 회피).
+type schemaPromise struct {
+	once sync.Once
+	ch   chan schemaResult
+}
+
+func newSchemaPromise() *schemaPromise {
+	return &schemaPromise{ch: make(chan schemaResult, 1)}
+}
+
+func (p *schemaPromise) resolve(f func() schemaResult) {
+	p.once.Do(func() { p.ch <- f() })
+}
+
+func (p *schemaPromise) wait() schemaResult {
+	return <-p.ch
 }
 
 func convert(src, dst string) error {
@@ -137,28 +208,33 @@ func convert(src, dst string) error {
 		return fmt.Errorf("configure duckdb: %w", err)
 	}
 
-	fd := &feed{
-		blocks: make(chan []byte, feedDepth),
-		done:   make(chan struct{}),
-	}
-	schemaCh := make(chan schemaResult, 1)
+	fd := newFeed()
+	schema := newSchemaPromise()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		fd.err = streamTarGZ(src, fd, schemaCh)
-		close(fd.blocks)
+		err := streamTarGZ(src, fd, schema)
+		// 구조적 백스톱: streamTarGZ의 어떤 반환 경로에서도 아래 wait가
+		// 영원히 블록되지 않는다 (이미 확정됐다면 no-op).
+		schema.resolve(func() schemaResult {
+			if err != nil {
+				return schemaResult{err: err}
+			}
+			return schemaResult{err: errors.New("stream ended without schema")}
+		})
+		fd.finish(err)
 	}()
 
-	schema := <-schemaCh
-	if schema.err != nil {
-		close(fd.done)
+	res := schema.wait()
+	if res.err != nil {
+		fd.abort()
 		wg.Wait()
-		return fmt.Errorf("stream: %w", schema.err)
+		return fmt.Errorf("stream: %w", res.err)
 	}
 
-	source := &csvSource{fd: fd, columns: schema.columns, maxThreads: threads}
+	source := &csvSource{fd: fd, columns: res.columns, maxThreads: threads}
 	udf := duckdb.ParallelChunkTableFunction{
 		Config: duckdb.TableFunctionConfig{},
 		BindArguments: func(map[string]any, ...any) (duckdb.ParallelChunkTableSource, error) {
@@ -166,7 +242,7 @@ func convert(src, dst string) error {
 		},
 	}
 	if err := duckdb.RegisterTableUDF(conn, "tar_csv", udf); err != nil {
-		close(fd.done)
+		fd.abort()
 		wg.Wait()
 		return fmt.Errorf("register udf: %w", err)
 	}
@@ -179,16 +255,16 @@ func convert(src, dst string) error {
 	_, queryErr := conn.ExecContext(ctx, query)
 
 	// 쿼리가 조기 종료한 경우 채널 send에 블록된 producer를 깨운다.
-	close(fd.done)
+	fd.abort()
 	wg.Wait()
 
 	if queryErr != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("duckdb: %w", queryErr)
 	}
-	if fd.err != nil {
+	if err := fd.error(); err != nil {
 		os.Remove(tmp)
-		return fmt.Errorf("stream: %w", fd.err)
+		return fmt.Errorf("stream: %w", err)
 	}
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp)
@@ -252,11 +328,11 @@ func (s *csvSource) FillChunk(ls any, chunk duckdb.DataChunk) error {
 			if row > 0 {
 				break // 부분 chunk 반환; 다음 블록은 다음 호출에서
 			}
-			block, ok := <-s.fd.blocks
-			if !ok {
-				if s.fd.err != nil {
-					return s.fd.err
-				}
+			block, err := s.fd.next()
+			if err != nil {
+				return err
+			}
+			if block == nil {
 				return chunk.SetSize(0) // 정상 종료
 			}
 			state.block, state.off = block, 0
@@ -395,30 +471,20 @@ func splitFields(line []byte, fields [][]byte) ([][]byte, error) {
 
 // ---- tar.gz streaming ----
 
-func streamTarGZ(src string, fd *feed, schemaCh chan<- schemaResult) error {
+func streamTarGZ(src string, fd *feed, schema *schemaPromise) error {
 	var names []string
-	schemaSent := false
 
 	fail := func(err error) error {
-		if !schemaSent {
-			schemaCh <- schemaResult{err: err}
-			schemaSent = true
-		}
+		schema.resolve(func() schemaResult { return schemaResult{err: err} })
 		return err
 	}
 
-	// 첫 블록에서 스키마를 확정해 보낸 뒤 채널로 전달한다.
+	// 첫 블록에서 스키마를 확정해 전달한다 (resolve 멱등 — 이후 블록은 no-op).
 	emit := func(block []byte) error {
-		if !schemaSent {
-			schemaCh <- schemaResult{columns: inferColumns(names, block)}
-			schemaSent = true
-		}
-		select {
-		case fd.blocks <- block:
-			return nil
-		case <-fd.done:
-			return errAborted
-		}
+		schema.resolve(func() schemaResult {
+			return schemaResult{columns: inferColumns(names, block)}
+		})
+		return fd.emit(block)
 	}
 
 	f, err := os.Open(src)
@@ -448,11 +514,10 @@ func streamTarGZ(src string, fd *feed, schemaCh chan<- schemaResult) error {
 			if err := bw.flush(); err != nil {
 				return err
 			}
-			if !schemaSent {
-				// 데이터 행이 하나도 없는 archive: 헤더만으로 스키마 확정.
-				schemaCh <- schemaResult{columns: inferColumns(names, nil)}
-				schemaSent = true
-			}
+			// 데이터 행이 하나도 없는 archive: 헤더만으로 스키마 확정 (멱등).
+			schema.resolve(func() schemaResult {
+				return schemaResult{columns: inferColumns(names, nil)}
+			})
 			return nil
 		}
 		if err != nil {

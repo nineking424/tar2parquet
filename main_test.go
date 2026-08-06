@@ -180,6 +180,38 @@ func TestConvertCorruptInput(t *testing.T) {
 	}
 }
 
+// gzip 스트림이 첫 행 블록(~2MiB) 방출 전에 끊기면 스키마가 미확정인 채로
+// producer가 종료된다 — 이 경로가 오류로 끝나야 한다. (schemaPromise 백스톱
+// 이전에는 convert가 스키마 대기에서 영원히 블록되는 데드락이었다.)
+func TestConvertTruncatedMidStream(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "A.tar.gz")
+	dst := filepath.Join(dir, "A.parquet")
+
+	rng := rand.New(rand.NewSource(7))
+	var sb strings.Builder
+	sb.WriteString("Col,Row\n")
+	for sb.Len() < 3<<20 {
+		sb.WriteString(strconv.Itoa(rng.Intn(1 << 30)))
+		sb.WriteByte(',')
+		sb.WriteString(strconv.Itoa(rng.Intn(1 << 30)))
+		sb.WriteByte('\n')
+	}
+	writeTarGZ(t, src, []tarFile{{name: "A-1.csv", data: sb.String()}})
+
+	info, err := os.Stat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(src, info.Size()/4); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := convert(src, dst); err == nil {
+		t.Fatal("expected error for truncated stream")
+	}
+}
+
 // TestFastPathLayout: 고속 경로의 불변식 1(드라이버 구조체 레이아웃)이
 // 깨지면 — 예: 드라이버 업그레이드 — 여기서 먼저 드러나야 한다.
 // 폴백 덕에 동작은 유지되지만, 성능 저하가 조용히 지나가면 안 된다.
