@@ -4,6 +4,8 @@
 하나의 `A.parquet`(zstd)으로 변환하는 CLI. 제약사항은 [REQUIREMENTS.md](REQUIREMENTS.md) 참조.
 
 ```bash
+# 빌드 전제조건: ISA-L (gzip 해제 — docs/adr/0002 참조)
+#   macOS: brew install isa-l / 데비안 계열: apt install libisal-dev
 go build .
 ./tar2parquet A.tar.gz   # → A.parquet
 ```
@@ -14,7 +16,7 @@ go build .
 ## 아키텍처
 
 ```
-A.tar.gz ─(prefetch 4MiB×2)─> gzip(klauspost) ─> tar ─> 헤더 제거/개행 보정
+A.tar.gz ─(prefetch 4MiB×2)─> igzip(ISA-L) ─> tar ─> 헤더 제거/개행 보정
       ─> 행 경계 블록 분할(~2MiB) ─> 유한 채널(depth 4)
                                         │
 DuckDB COPY (SELECT * FROM tar_csv()) TO A.parquet (zstd)

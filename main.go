@@ -4,7 +4,7 @@ package main
 //
 // 아키텍처:
 //
-//	tar.gz ─(prefetch)─> gzip ─> tar ─> 헤더 제거 ─> 행 경계 블록 분할 ─> 유한 채널
+//	tar.gz ─(prefetch)─> igzip(ISA-L) ─> tar ─> 헤더 제거 ─> 행 경계 블록 분할 ─> 유한 채널
 //	                                                                        │
 //	     DuckDB COPY (SELECT * FROM tar_csv()) TO parquet  <── FillChunk(멀티스레드 파싱/적재)
 //
@@ -36,7 +36,8 @@ import (
 	"unsafe"
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
-	"github.com/klauspost/compress/gzip"
+
+	"tar2parquet/igzip"
 )
 
 const (
@@ -429,7 +430,7 @@ func streamTarGZ(src string, fd *feed, schemaCh chan<- schemaResult) error {
 	done := make(chan struct{})
 	defer close(done)
 
-	gz, err := gzip.NewReader(newPrefetchReader(f, prefetchBlockSize, prefetchDepth, done))
+	gz, err := igzip.NewReader(newPrefetchReader(f, prefetchBlockSize, prefetchDepth, done))
 	if err != nil {
 		return fail(fmt.Errorf("gzip: %w", err))
 	}
