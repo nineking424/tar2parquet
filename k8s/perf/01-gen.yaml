@@ -33,6 +33,7 @@ spec:
               df -hT /data | tail -1
 
               echo "== clone & build =="
+              apt-get update -qq >/dev/null && apt-get install -y -qq libisal-dev >/dev/null
               git clone --depth 1 https://github.com/nineking424/tar2parquet.git src
               cd src && git log --oneline -1
               mkdir -p /data/bin
@@ -40,14 +41,23 @@ spec:
               go build -o /data/bin/gen ./bench/gen
               go build -o /data/bin/check ./bench/check
               go build -o /data/bin/gunzip ./bench/gunzip
+              go build -o /data/bin/igzip ./bench/igzip
 
-              echo "== NFS write baseline (1GiB, fsync) =="
-              dd if=/dev/zero of=/data/dd.test bs=4M count=256 conv=fsync 2>&1 | tail -1
-              rm /data/dd.test
+              echo "== ldd (libisal 정적 링크 확인: 목록에 없어야 함, ADR 0002) =="
+              ldd /data/bin/tar2parquet
 
-              echo "== gen 119 x 50MB onto NFS =="
-              time /data/bin/gen /data/A.tar.gz
-              ls -l /data/A.tar.gz
+              if [ -f /data/A.tar.gz ]; then
+                echo "== sample exists, skip gen =="
+                ls -l /data/A.tar.gz
+              else
+                echo "== NFS write baseline (1GiB, fsync) =="
+                dd if=/dev/zero of=/data/dd.test bs=4M count=256 conv=fsync 2>&1 | tail -1
+                rm /data/dd.test
+
+                echo "== gen 119 x 50MB onto NFS =="
+                time /data/bin/gen /data/A.tar.gz
+                ls -l /data/A.tar.gz
+              fi
               echo "== gen done =="
           volumeMounts:
             - name: data

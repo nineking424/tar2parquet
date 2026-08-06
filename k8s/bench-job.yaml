@@ -37,6 +37,7 @@ spec:
               df -hT /data | tail -1
 
               echo "== clone & build =="
+              apt-get update -qq >/dev/null && apt-get install -y -qq libisal-dev >/dev/null
               git clone --depth 1 https://github.com/nineking424/tar2parquet.git src
               cd src
               time go build -o /work/tar2parquet .
