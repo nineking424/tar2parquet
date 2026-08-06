@@ -53,7 +53,8 @@ DuckDB COPY (SELECT * FROM tar_csv()) TO A.parquet (zstd)
 
 표준 샘플(50MiB CSV × 119개, 113M행/6.24GB) 기준 상세 리포트는
 **[PERFORMANCE.md](PERFORMANCE.md)** 참조. 요약: Apple M4에서 24.1s(259MB/s),
-Xeon 4코어+NFS에서 53.7s(116MB/s, cold도 +7.6%뿐 — NFS read는 prefetch로 흡수).
+Xeon 4코어+NFS에서 46.8s(133MB/s, cold도 +6%뿐 — NFS read는 prefetch로 흡수).
+2026-08-07 최적화(§10) 이후 user CPU가 41% 줄어 2코어면 gzip 한계에 도달한다.
 
 아래는 초기 검증(44M행 / CSV 2.43GB / tar.gz ~1GB) 수치.
 
