@@ -5,7 +5,8 @@
 
 ```bash
 # 빌드 전제조건: ISA-L (gzip 해제 — docs/adr/0002 참조)
-#   macOS: brew install isa-l / 데비안 계열: apt install libisal-dev
+#   macOS: brew install isa-l
+#   linux: 소스 빌드(정적 링크용 libisal.a — k8s/perf/01-gen.yaml 절차 참조)
 go build .
 ./tar2parquet A.tar.gz   # → A.parquet
 ```

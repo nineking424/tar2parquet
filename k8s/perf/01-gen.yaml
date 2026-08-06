@@ -33,7 +33,10 @@ spec:
               df -hT /data | tail -1
 
               echo "== clone & build =="
-              apt-get update -qq >/dev/null && apt-get install -y -qq libisal-dev >/dev/null
+              # 데비안 libisal-dev는 .so만 제공 — 정적 링크(ADR 0002)를 위해 소스 빌드.
+              apt-get update -qq >/dev/null && apt-get install -y -qq nasm autoconf automake libtool >/dev/null
+              git clone --depth 1 --branch v2.31.0 https://github.com/intel/isa-l.git isa-l
+              (cd isa-l && ./autogen.sh >/dev/null && ./configure --prefix=/usr/local >/dev/null && make -j"$(nproc)" install >/dev/null)
               git clone --depth 1 https://github.com/nineking424/tar2parquet.git src
               cd src && git log --oneline -1
               mkdir -p /data/bin

@@ -4,14 +4,17 @@
 //
 // 빌드 전제조건: isa-l 개발 파일 필요.
 //   - macOS: brew install isa-l (개발용, 동적 링크)
-//   - linux: apt install libisal-dev (배포용, libisal.a 정적 링크 —
-//     prebuilt binary가 런타임 라이브러리 없이 동작해야 한다)
+//   - linux: isa-l 소스 빌드로 /usr/local에 설치 (배포용, libisal.a 정적
+//     링크 — prebuilt binary가 런타임 라이브러리 없이 동작해야 한다.
+//     데비안 libisal-dev는 .so만 제공하므로 부적합. k8s/perf/01-gen.yaml의
+//     빌드 절차 참조)
 package igzip
 
 /*
 #cgo darwin CFLAGS: -I/opt/homebrew/opt/isa-l/include
 #cgo darwin LDFLAGS: -L/opt/homebrew/opt/isa-l/lib -lisal
-#cgo linux LDFLAGS: -l:libisal.a
+#cgo linux CFLAGS: -I/usr/local/include
+#cgo linux LDFLAGS: -L/usr/local/lib -l:libisal.a
 #include <stdlib.h>
 #include <isa-l/igzip_lib.h>
 */
