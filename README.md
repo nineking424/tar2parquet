@@ -40,6 +40,11 @@ DuckDB COPY (SELECT * FROM tar_csv()) TO A.parquet (zstd)
       └─ Table UDF FillChunk: 멀티스레드가 블록 단위로 CSV 파싱 + 청크 적재
 ```
 
+- **파일 = 모듈**: `main.go`(파이프라인 조립 + `feed` 동시성 규약) ·
+  `producer.go`(prefetch·igzip 해제·tar 순회·행 경계 블록 분할) ·
+  `consumer.go`(Table UDF 파싱·적재) · `chunkfill.go`(적재 fast path) ·
+  `schema.go`(스키마 확정) · `igzip/`(해제 reader).
+  각 파일 머리 주석이 그 모듈의 interface(계약·불변식)다.
 - **Table UDF 공급**: DuckDB `read_csv` + pipe(`/dev/fd/N`) 조합은
   duckdb-go v2.10504에서 바인딩 시점 스키마가 placeholder(`column0`)로
   잡히고 0행을 반환한다(raw connection 실행으로도 재현, 조용한 데이터 소실).
