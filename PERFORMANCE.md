@@ -150,3 +150,44 @@ kubectl logs job/tar2parquet-perf-bench
 - quoted field 내 개행은 미지원(행 경계 블록 분할 전제, README 참조).
 - k8s warm 수치는 page cache(limit 6Gi > 아카이브 2.69GB) 영향을 포함하나,
   cold 실측(run 1)과의 차이가 작아 결론에 영향 없음.
+
+## 10. 후속 최적화: 벡터 직접 쓰기 + 고속 파서 (2026-08-07)
+
+§7의 "현 구조 내 소진" 결론 이후, 프로파일(pprof, 계측 플래그
+`TAR2PARQUET_CPUPROFILE`)로 consumer 경로를 재분석해 두 가지를 적용했다.
+목표 지표는 **user CPU**(1코어~수십 코어 스펙트럼에서 저코어 wall에 1:1
+반영, 다코어에서 무손해 — `docs/adr/0001` 참조).
+
+1. **벡터 직접 쓰기**(`chunkfill.go`): 셀 단위 `SetChunkValue`가
+   VARCHAR마다 cgo 호출(행 113M × 1컬럼), 제네릭 디스패치, projection 맵
+   조회를 수행 — 합계 총 CPU의 ~15%. DuckDB 벡터의 data 배열에 typed
+   slice로 직접 쓰고, ≤12바이트 문자열은 `duckdb_string_t` inline으로
+   cgo 없이, NULL은 validity 비트 직접 조작으로 대체했다. 드라이버
+   레이아웃/타입 검증 실패 시 기존 경로 자동 폴백.
+2. **고속 숫자 파서**: `strconv.ParseFloat` 경로가 총 CPU의 ~8%.
+   지수 없는 ≤15자리 십진수는 Clinger fast path(정수 누적 후 10^frac
+   나눗셈 1회 = 단일 IEEE 반올림)로 처리한다. strconv와 **비트 단위 동일**
+   함을 무작위 10,000케이스 대조 테스트로 보장하고, 그 외 형식은 strconv
+   폴백.
+
+### 측정 (20 × 50MiB 축소 샘플*, Apple M4, 3회 중앙값)
+
+| 지표 | 이전 | 이후 | 변화 |
+|---|---|---|---|
+| user CPU (10T) | 11.23s | 7.36s | **−34%** |
+| user CPU (4T) | 11.17s | 7.37s | **−34%** |
+| user CPU (1T) | — | 7.25s | — |
+| wall (10T) | 4.52s | 4.23s | −6% (producer 병목 유지) |
+| peak RSS | 363~422MB | 219~437MB | 예산(1GB) 내 |
+
+\* 로컬 디스크 여유 부족으로 축소 샘플 사용. user CPU는 데이터량에
+선형이므로 비율 판정에 유효. 정합성(`bench/check`): 행 수 18,972,296,
+집계값·스키마 변경 전과 완전 일치.
+
+- 4코어 환경 추정 효과: 총 CPU 수요 ~180s → ~120s, wall 하한 45s → 30s
+  수준(gzip 한계 44s와 교차하므로 실측은 k8s에서 확인 필요).
+- 남은 CPU 분포(최적화 후): gzip 해제 ~35%, DuckDB 인코딩(zstd) ~30%,
+  Go 스케줄러 wakeup(macOS `pthread_cond_signal`) ~25%, 파싱/적재 ~6%.
+  앞 둘은 포맷/압축률 제약으로 봉인, wakeup은 macOS 특성으로 Linux
+  (운영 환경)에서는 futex라 훨씬 저렴 — 블록 크기 4배 실험으로 채널
+  send 빈도와 무관함을 확인했다(개발 머신 특화 최적화는 하지 않음).

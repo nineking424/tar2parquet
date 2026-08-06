@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,6 +70,19 @@ func main() {
 
 	src := os.Args[1]
 	dst := outputPath(src)
+
+	// TAR2PARQUET_CPUPROFILE: pprof CPU 프로파일 출력 경로 (성능 분석용).
+	if path := os.Getenv("TAR2PARQUET_CPUPROFILE"); path != "" {
+		f, err := os.Create(path)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatal(err)
+		}
+		defer pprof.StopCPUProfile()
+	}
 
 	if err := convert(src, dst); err != nil {
 		log.Fatal(err)
@@ -221,6 +235,7 @@ type fillState struct {
 	block  []byte
 	off    int
 	fields [][]byte
+	fast   []fastCol
 }
 
 // FillChunk은 DuckDB의 여러 스레드에서 동시에 호출된다.
@@ -228,6 +243,7 @@ type fillState struct {
 func (s *csvSource) FillChunk(ls any, chunk duckdb.DataChunk) error {
 	state := ls.(*fillState)
 	capacity := duckdb.GetDataChunkCapacity()
+	state.fast = bindFastColumns(&chunk, s.columns, state.fast[:0])
 	row := 0
 
 	for row < capacity {
@@ -260,9 +276,17 @@ func (s *csvSource) FillChunk(ls any, chunk duckdb.DataChunk) error {
 				len(fields), len(s.columns), line)
 		}
 
-		for i, col := range s.columns {
-			if err := setField(chunk, i, row, col.typ, fields[i]); err != nil {
-				return fmt.Errorf("column %s: %w (row: %.100s)", col.name, err, line)
+		if fast := state.fast; fast != nil {
+			for i := range fast {
+				if err := fast[i].set(row, fields[i]); err != nil {
+					return fmt.Errorf("column %s: %w (row: %.100s)", s.columns[i].name, err, line)
+				}
+			}
+		} else {
+			for i, col := range s.columns {
+				if err := setField(chunk, i, row, col.typ, fields[i]); err != nil {
+					return fmt.Errorf("column %s: %w (row: %.100s)", col.name, err, line)
+				}
 			}
 		}
 		row++

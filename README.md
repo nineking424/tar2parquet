@@ -9,6 +9,7 @@ go build .
 ```
 
 환경변수 `TAR2PARQUET_THREADS`로 병렬도 상한을 제한할 수 있다(기본: 코어 수).
+`TAR2PARQUET_CPUPROFILE=<path>`를 주면 pprof CPU 프로파일을 기록한다(성능 분석용).
 
 ## 아키텍처
 
@@ -25,6 +26,12 @@ DuckDB COPY (SELECT * FROM tar_csv()) TO A.parquet (zstd)
   잡히고 0행을 반환한다(raw connection 실행으로도 재현, 조용한 데이터 소실).
   대신 `ParallelChunkTableSource`로 Go가 행 블록을 직접 공급하며,
   이 경로는 CSV 파싱과 Parquet 인코딩이 전 코어로 병렬화된다.
+- **고속 적재 경로**(`chunkfill.go`): FillChunk이 셀 단위 `SetChunkValue`
+  대신 DuckDB 벡터 메모리에 typed slice로 직접 쓴다. ≤12바이트 문자열은
+  `duckdb_string_t` inline 표현으로 cgo 호출 없이 쓰고, 지수 없는 ≤15자리
+  숫자는 Clinger fast path로 파싱한다(strconv와 비트 동일, 그 외 폴백).
+  드라이버 구조체 레이아웃 검증 실패 시 기존 경로로 자동 폴백.
+  효과: 표준 워크로드에서 user CPU 34% 감소(PERFORMANCE.md §10).
 - **스키마**: 첫 CSV 헤더에서 컬럼명을 읽고, 알려진 컬럼
   (Col,Row→BIGINT / ChipX,ChipY,WaferX,WaferY,Height→DOUBLE / Zone→VARCHAR)은
   고정, 미지 컬럼은 첫 블록 샘플에서 BIGINT→DOUBLE→VARCHAR 순으로 추론.
