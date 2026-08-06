@@ -58,6 +58,10 @@ Debian bookworm(golang:1.25 이미지)에서 빌드돼 실행이 거부된다. �
   요구하는가"다 — 최종 판정은 `rockylinux:8.6` 실행 검증이다.
 - **배포 채널**: GitHub Releases (`gh release create`). 이 결정 이전에는
   레포에 기록이 없었다 — v0.1.0이 사실상 그 채널이었음을 확인하고 명문화한다.
+- **릴리스 자산은 linux-amd64만** 포함한다 (2026-08-07 사용자 확정).
+  darwin은 isa-l 동적 링크(brew 전제)라 배포 대상이 아니고(ADR 0002),
+  linux-arm64는 프로덕션 타깃(Xeon)이 아니다. 필요해지면
+  `build/release.sh`의 `--platform` 변경만으로 linux-arm64를 추가할 수 있다.
 
 ## 대안과 기각 사유
 
