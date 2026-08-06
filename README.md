@@ -55,9 +55,10 @@ DuckDB COPY (SELECT * FROM tar_csv()) TO A.parquet (zstd)
 ## 성능
 
 표준 샘플(50MiB CSV × 119개, 113M행/6.24GB) 기준 상세 리포트는
-**[PERFORMANCE.md](PERFORMANCE.md)** 참조. 요약: Apple M4에서 24.1s(259MB/s),
-Xeon 4코어+NFS에서 46.8s(133MB/s, cold도 +6%뿐 — NFS read는 prefetch로 흡수).
-2026-08-07 최적화(§10) 이후 user CPU가 41% 줄어 2코어면 gzip 한계에 도달한다.
+**[PERFORMANCE.md](PERFORMANCE.md)** 참조. 요약(2026-08-07, §10 벡터 직접
+쓰기 + §11 igzip 이후): Xeon 4코어+NFS에서 warm 22.4s(§10 대비 −51%),
+cold 28.1s(NFS read 하한). 병목은 consumer(파싱+인코딩)로, igzip 하한
+(11s)까지는 ~6-7코어까지 코어를 늘릴수록 wall이 준다.
 
 아래는 초기 검증(44M행 / CSV 2.43GB / tar.gz ~1GB) 수치.
 

@@ -21,7 +21,9 @@ spec:
               dd if=/data/A.tar.gz of=/dev/null bs=4M 2>&1 | tail -1
               echo "== warm NFS sequential read (page cache) =="
               dd if=/data/A.tar.gz of=/dev/null bs=4M 2>&1 | tail -1
-              echo "== gzip decompress only, warm cache (CPU 이론 상한) =="
+              echo "== gzip decompress only, warm cache: igzip = 파이프라인 경로(이론 상한), gunzip = klauspost 대조군 =="
+              /data/bin/igzip /data/A.tar.gz
+              /data/bin/igzip /data/A.tar.gz
               /data/bin/gunzip /data/A.tar.gz
               /data/bin/gunzip /data/A.tar.gz
               echo "== coldread done =="
