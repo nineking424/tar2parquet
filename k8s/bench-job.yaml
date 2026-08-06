@@ -1,5 +1,10 @@
 # NFS(기본 storage class) 환경 성능 검증용 Job.
 #
+# 주의: 이 Job은 **측정용**이다. 빌드와 실행이 같은 컨테이너(golang:1.24,
+# Debian bookworm)에서 일어나므로 glibc 호환 문제가 발생하지 않아 그대로 둔다.
+# 배포용 릴리스 빌드는 rockylinux:8 기반의 별도 경로다 — build/release.sh,
+# docs/adr/0003 참조. 여기서 만든 바이너리를 배포에 쓰면 안 된다.
+#
 #   kubectl apply -f k8s/bench-job.yaml
 #   kubectl logs -f job/tar2parquet-bench
 #

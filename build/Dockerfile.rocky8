@@ -1,0 +1,59 @@
+# 릴리스 빌드 환경 — Rocky Linux 8.6(glibc 2.28) 호환 (ADR 0003)
+#
+# 프로덕션이 Rocky Linux 8.6이므로 릴리스 바이너리는 glibc 2.28 이하만
+# 요구해야 한다. 베이스는 rockylinux:8(현행 8.10)을 쓴다 — 8.x 계열은
+# glibc 2.28로 동일하고 심볼 버전도 GLIBC_2.28이 상한이며, 8.6 이미지는
+# EOL이라 dnf 리포지토리가 vault로 이동해 패키지 설치가 불가하다.
+# 산출물의 실행 검증은 rockylinux:8.6에서 별도로 수행한다(build/release.sh).
+#
+# C++ 런타임: duckdb-go-bindings의 사전 컴파일 정적 라이브러리는
+# GLIBCXX_3.4.26/3.4.29/3.4.30·CXXABI_1.3.13을 요구하는데(실측),
+# Rocky 8 기본 libstdc++(GCC 8.5)는 3.4.25까지만 제공한다. gcc-toolset-12는
+# 그 심볼을 제공하면서도 시스템 glibc 2.28에 대해 링크하므로,
+# libstdc++/libgcc를 정적 링크하면 동적 요구는 glibc 2.28 이하만 남는다.
+FROM rockylinux:8
+
+# 재현성: 버전과 체크섬을 고정한다. 갱신 시 이 ARG만 바꾼다.
+ARG GO_VERSION=1.24.13
+ARG GO_SHA256=1fc94b57134d51669c72173ad5d49fd62afb0f1db9bf3f798fd98ee423f8d730
+ARG ISAL_VERSION=v2.31.0
+
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+# gcc-toolset-12: 최신 C++ 런타임 심볼 제공(정적 링크용).
+# nasm/autotools: isa-l 소스 빌드 전제. binutils: objdump(심볼 검증).
+# nasm은 BaseOS/AppStream에 없고 powertools(CRB)에 있다(실측: nasm 2.15.03).
+RUN dnf -y install --setopt=install_weak_deps=False dnf-plugins-core \
+    && dnf config-manager --set-enabled powertools \
+    && dnf -y install --setopt=install_weak_deps=False \
+        gcc-toolset-12 \
+        make git tar gzip diffutils which binutils \
+        nasm autoconf automake libtool \
+    && dnf clean all
+
+# Go 툴체인 — 공식 tarball(체크섬 검증). Rocky 8의 go-toolset은 1.24 미만.
+RUN curl -fsSLo /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+    && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+
+# ISA-L 정적 라이브러리 — ADR 0002. 데비안 libisal-dev는 .so만 제공하므로
+# 어느 배포판이든 소스 빌드가 정답이다. gcc-toolset-12로 빌드해 툴체인을 통일한다.
+RUN source /opt/rh/gcc-toolset-12/enable \
+    && git clone --depth 1 --branch "${ISAL_VERSION}" https://github.com/intel/isa-l.git /tmp/isa-l \
+    && cd /tmp/isa-l \
+    && ./autogen.sh \
+    && ./configure --prefix=/usr/local \
+    && make -j"$(nproc)" install \
+    && rm -rf /tmp/isa-l
+
+ENV PATH=/usr/local/go/bin:$PATH \
+    GOPATH=/go \
+    GOTOOLCHAIN=local \
+    CGO_ENABLED=1
+
+COPY build-release.sh verify-glibc.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/build-release.sh /usr/local/bin/verify-glibc.sh
+
+WORKDIR /src
+ENTRYPOINT ["/usr/local/bin/build-release.sh"]

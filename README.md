@@ -4,15 +4,31 @@
 하나의 `A.parquet`(zstd)으로 변환하는 CLI. 제약사항은 [REQUIREMENTS.md](REQUIREMENTS.md) 참조.
 
 ```bash
-# 빌드 전제조건: ISA-L (gzip 해제 — docs/adr/0002 참조)
+# 로컬 개발 빌드. 전제조건: ISA-L (gzip 해제 — docs/adr/0002 참조)
 #   macOS: brew install isa-l
-#   linux: 소스 빌드(정적 링크용 libisal.a — k8s/perf/01-gen.yaml 절차 참조)
+#   linux: 소스 빌드(정적 링크용 libisal.a — build/Dockerfile.rocky8 절차 참조)
 go build .
 ./tar2parquet A.tar.gz   # → A.parquet
 ```
 
 환경변수 `TAR2PARQUET_THREADS`로 병렬도 상한을 제한할 수 있다(기본: 코어 수).
 `TAR2PARQUET_CPUPROFILE=<path>`를 주면 pprof CPU 프로파일을 기록한다(성능 분석용).
+
+## 릴리스 빌드 (배포용 linux 바이너리)
+
+배포 대상은 **Rocky Linux 8.6(glibc 2.28)**이다. 로컬/CI의 최신 배포판에서
+그냥 빌드한 바이너리는 프로덕션에서 뜨지 않는다 — `GLIBC_2.34` 계열과
+`GLIBCXX_3.4.30`을 요구하기 때문이다(근거와 결정: [ADR 0003](docs/adr/0003-glibc-target-rocky8.md)).
+릴리스는 반드시 아래 경로로 만든다:
+
+```bash
+build/release.sh          # rockylinux:8 컨테이너 빌드 → 심볼 검증
+                          # → rockylinux:8.6 실행 검증 → dist/ 패키징
+```
+
+Docker만 있으면 되고, 결과는 `dist/`에 떨어진다. 스크립트는 GLIBC 요구
+버전이 2.28을 넘거나 libisal/libstdc++ 동적 의존이 남으면 실패한다.
+prebuilt 배포 채널은 [GitHub Releases](https://github.com/nineking424/tar2parquet/releases)다.
 
 ## 아키텍처
 

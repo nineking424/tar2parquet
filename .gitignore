@@ -1,6 +1,7 @@
 *.parquet
 *.tar.gz
 tar2parquet
+/dist
 /gen
 /check
 /gunzip
